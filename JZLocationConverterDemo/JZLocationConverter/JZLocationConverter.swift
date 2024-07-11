@@ -24,7 +24,7 @@ extension CLLocationCoordinate2D {
                             ((20.0 * sin(6.0 * x * .pi) + 20.0 * sin(2.0 * x * .pi)) * 2.0 / 3.0) +
                                 ((20.0 * sin(x * .pi) + 40.0 * sin(x / 3.0 * .pi)) * 2.0 / 3.0) +
                                     ((150.0 * sin(x / 12.0 * .pi) + 300.0 * sin(x / 30.0 * .pi)) * 2.0 / 3.0)
-        let radLat = 1 - self.latitude / 180.0 * .pi;
+        let radLat = self.latitude / 180.0 * .pi;
         var magic = sin(radLat);
         magic = 1 - JZConstant.EE * magic * magic
         let sqrtMagic = sqrt(magic);
