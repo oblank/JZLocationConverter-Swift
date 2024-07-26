@@ -62,7 +62,7 @@ extension JZLocationConverter {
                 DispatchQueue.main.async {
                     if isOut {
                         result(wgs84Point)
-                    }else {
+                    } else {
                         result(resultPoint)
                     }
                 }
@@ -91,65 +91,140 @@ extension JZLocationConverter {
     }
    
     // WGS-84 to GCJ-02
-    fileprivate func gcj02EncryptPoints(_ wgs84Points:[JZLocationResult],result:@escaping ([JZLocationResult]) -> Void) {
-        self.queue.async {
+    fileprivate func gcj02EncryptPointsAsync(_ wgs84Points: [JZLocationResult], conversionType: JZConversionType, result: @escaping ([JZLocationResult]) -> Void) {
+        self.queue.async { [weak self] in
+            guard let self else { return DispatchQueue.main.async { result(wgs84Points) } }
+            
             // As checking function is using GCJ-02, change WGS-84 to GCJ-02 first
-            let gcj02Points = wgs84Points.map { point in
-                let offset = point.coordinate.gcj02Offset()
-                let coordinate = CLLocationCoordinate2D(latitude: point.coordinate.latitude + offset.latitude, longitude: point.coordinate.longitude + offset.longitude)
-                return JZLocationResult(type: .GCJ02, coordinate: coordinate)
+            let gcj02Points = self.WGS84ToGCJ02(points: wgs84Points, isReverse: false)
+            
+            // Force conversion, bypass isPointsOutOfArea checking, directly return result with GCJ-02
+            guard !conversionType.isForceConversion else {
+                return DispatchQueue.main.async { result(gcj02Points) }
             }
             
             // Only apply offset if point inside area
-            JZAreaManager.default.isPointsOutOfArea(gcj02Locations: gcj02Points, result: { gcj02Locations in
-                var resultPoints: [JZLocationResult] = []
-                for (index, gcj02Location) in gcj02Locations.enumerated() {
-                    var wgs84Point = wgs84Points[index]
-                    
-                    // Safe check: only convert coordinate of WGS-84
-                    if wgs84Point.type != .WGS84 {
-                        resultPoints.append(wgs84Point)
-                    }
-                    else if !gcj02Location.isOutOfArea {
-                        resultPoints.append(gcj02Location)
-                    } else {
-                        wgs84Point.isOutOfArea = true
-                        resultPoints.append(wgs84Point)
-                    }
-                }
-                DispatchQueue.main.async {
-                    result(resultPoints)
-                }
+            JZAreaManager.default.isPointsOutOfAreaAsync(gcj02Locations: gcj02Points, result: { [weak self] isPointsOutOfAreaResult in
+                guard let self else { return DispatchQueue.main.async { result(wgs84Points) } }
+                
+                let resultPoints = convertWGS84ToGCJ02Result(isPointsOutOfAreaResult: isPointsOutOfAreaResult, wgs84Points: wgs84Points)
+                DispatchQueue.main.async { result(resultPoints) }
             })
         }
     }
+    
+    fileprivate func gcj02EncryptPoints(_ wgs84Points:[JZLocationResult], conversionType: JZConversionType) -> [JZLocationResult] {
+        // As checking function is using GCJ-02, change WGS-84 to GCJ-02 first
+        let gcj02Points = WGS84ToGCJ02(points: wgs84Points, isReverse: false)
+        
+        // Force conversion, bypass isPointsOutOfArea checking, directly return result with GCJ-02
+        guard !conversionType.isForceConversion else { return gcj02Points }
+        
+        // Only apply offset if point inside area
+        let isPointsOutOfAreaResult = JZAreaManager.default.isPointsOutOfArea(gcj02Locations: gcj02Points)
+        return convertWGS84ToGCJ02Result(isPointsOutOfAreaResult: isPointsOutOfAreaResult, wgs84Points: wgs84Points)
+    }
+   
+   
+    /// Function for conversion between GCJ02 and WGS84
+    /// - Parameters:
+    ///   - points: If isReverse is false, input JZLocationResult in type WGS84 else GCJ02.
+    ///   - isReverse: If isReverse is true, convrt from GCJ02 to WGS84
+    /// - Returns: If isReverse is false, return JZLocationResult in type GCJ02 else WGS84
+    private func WGS84ToGCJ02(points: [JZLocationResult], isReverse: Bool) -> [JZLocationResult] {
+        return points.map { point in
+            let offset = point.coordinate.gcj02Offset()
+            let latitude = isReverse ? point.coordinate.latitude - offset.latitude : point.coordinate.latitude + offset.latitude
+            let longitude = isReverse ? point.coordinate.longitude - offset.longitude : point.coordinate.longitude + offset.longitude
+            let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            return JZLocationResult(type: isReverse ? .WGS84 : .GCJ02 , coordinate: coordinate, isOutOfArea: point.isOutOfArea)
+        }
+    }
+    
+    /// Function to generate WGS84 or GCJ02 result of "WGS84 to GCJ02 conversion"
+    /// - Parameters:
+    ///   - isPointsOutOfAreaResult: Result of isPointsOutOfArea, point.type should be GCJ02.
+    ///   - wgs84Points: JZLocationResult, point.type should be WGS84.
+    /// - Returns: JZLocationResult, point.type could be WGS84 or GCJ02.
+    private func convertWGS84ToGCJ02Result(isPointsOutOfAreaResult: [JZLocationResult], wgs84Points: [JZLocationResult]) -> [JZLocationResult] {
+        var resultPoints: [JZLocationResult] = []
+        for (index, gcj02Location) in isPointsOutOfAreaResult.enumerated() {
+            var wgs84Point = wgs84Points[index]
+            
+            // Safe check: not expected to be nil
+            guard let isOutOfArea = gcj02Location.isOutOfArea else {
+                resultPoints.append(wgs84Point)
+                continue
+            }
+            
+            // Safe check: only convert coordinate of WGS-84
+            if wgs84Point.type != .WGS84 {
+                resultPoints.append(wgs84Point)
+            }
+            else if !isOutOfArea {
+                resultPoints.append(gcj02Location)
+            } else {
+                wgs84Point.isOutOfArea = true
+                resultPoints.append(wgs84Point)
+            }
+        }
+        return resultPoints
+    }
 
     // GCJ-02 to WGS-84
-    fileprivate func gcj02DecryptPoints(_ gcj02Points:[JZLocationResult],result:@escaping ([JZLocationResult]) -> Void) {
-        self.queue.async {
+    fileprivate func gcj02DecryptPointsAsync(_ gcj02Points:[JZLocationResult], conversionType: JZConversionType, result:@escaping ([JZLocationResult]) -> Void) {
+        self.queue.async { [weak self] in
+            guard let self else { return DispatchQueue.main.async { result(gcj02Points) } }
+            
+            guard !conversionType.isForceConversion else {
+                let resultPoints = self.WGS84ToGCJ02(points: gcj02Points, isReverse: true)
+                return DispatchQueue.main.async { result(resultPoints) }
+            }
+            
             // Check if points inside area, only apply offset if point inside area
-            JZAreaManager.default.isPointsOutOfArea(gcj02Locations: gcj02Points, result: { gcj02Locations in
-                var resultPoints: [JZLocationResult] = []
-                for (index, gcj02Location) in gcj02Locations.enumerated() {
-                    let gcj02Point = gcj02Points[index]
-                    
-                    // Safe check: only convert coordinate of GCJ-02
-                    if gcj02Point.type != .GCJ02 {
-                        resultPoints.append(gcj02Location)
-                    } else if !gcj02Location.isOutOfArea {
-                        let offset = gcj02Location.coordinate.gcj02Offset()
-                        let coordinate = CLLocationCoordinate2D(latitude: gcj02Location.latitude - offset.latitude, longitude: gcj02Location.longitude - offset.longitude)
-                        let wgs84Point = JZLocationResult(type: .WGS84, coordinate: coordinate)
-                        resultPoints.append(wgs84Point)
-                    } else {
-                        resultPoints.append(gcj02Location)
-                    }
-                }
-                DispatchQueue.main.async {
-                    result(resultPoints)
-                }
-            })
+            JZAreaManager.default.isPointsOutOfAreaAsync(gcj02Locations: gcj02Points) { [weak self] isPointsOutOfAreaResult in
+                guard let self else { return DispatchQueue.main.async { result(gcj02Points) } }
+                
+                let resultPoints = self.convertGCJ02ToWGS84Result(isPointsOutOfAreaResult: isPointsOutOfAreaResult, gcj02Points: gcj02Points)
+                DispatchQueue.main.async { result(resultPoints) }
+            }
         }
+    }
+    
+    fileprivate func gcj02DecryptPoints(_ gcj02Points:[JZLocationResult], conversionType: JZConversionType) -> [JZLocationResult] {
+        guard !conversionType.isForceConversion else {
+            return self.WGS84ToGCJ02(points: gcj02Points, isReverse: true)
+        }
+        
+        // Check if points inside area, only apply offset if point inside area
+        let isPointsOutOfAreaResult = JZAreaManager.default.isPointsOutOfArea(gcj02Locations: gcj02Points)
+        return convertGCJ02ToWGS84Result(isPointsOutOfAreaResult: isPointsOutOfAreaResult, gcj02Points: gcj02Points)
+    }
+    
+    /// Function to generate WGS84 or GCJ02 result of "WGS84 to GCJ02 conversion"
+    /// - Parameters:
+    ///   - isPointsOutOfAreaResult: Result of isPointsOutOfArea, point.type should be GCJ02.
+    ///   - gcj02Points: JZLocationResult, original point for conversion. Point.type should be GCJ02.
+    /// - Returns: JZLocationResult, point.type could be WGS84 or GCJ02.
+    private func convertGCJ02ToWGS84Result(isPointsOutOfAreaResult: [JZLocationResult], gcj02Points:[JZLocationResult]) -> [JZLocationResult] {
+        var resultPoints: [JZLocationResult] = []
+        for (index, gcj02Location) in isPointsOutOfAreaResult.enumerated() {
+            // Safe check: not expected to be nil
+            guard let isOutOfArea = gcj02Location.isOutOfArea else {
+                resultPoints.append(gcj02Points[index])
+                continue
+            }
+            
+            // Safe check: only convert coordinate of GCJ-02
+            if gcj02Location.type != .GCJ02 {
+                resultPoints.append(gcj02Points[index])
+            } else if !isOutOfArea, let wgs84Point = WGS84ToGCJ02(points: [gcj02Location], isReverse: true).first {
+                resultPoints.append(wgs84Point)
+            } else {
+                resultPoints.append(gcj02Location)
+            }
+        }
+        return resultPoints
     }
 }
 
@@ -223,7 +298,7 @@ extension JZLocationConverter {
    
     private func convertCoordinateToResult(type: JZLocationType, coordinates: [CLLocationCoordinate2D]) -> [JZLocationResult] {
         return coordinates.map { coordinate in
-          return JZLocationResult(type: type, coordinate: coordinate)
+            return JZLocationResult(type: type, coordinate: coordinate)
         }
     }
 }
@@ -266,13 +341,14 @@ extension JZLocationConverter {
     If coordinate out of area, will return WGS-84.
     This matches the usage of MKMapView.
     */
-    public func wgs84ToGcj02Points(_ wgs84Points:[CLLocationCoordinate2D],result:@escaping ([JZLocationResult]) -> Void) {
+    public func wgs84ToGcj02PointsAsync(_ wgs84Points:[CLLocationCoordinate2D], conversionType: JZConversionType, result:@escaping ([JZLocationResult]) -> Void) {
         let points = convertCoordinateToResult(type: .WGS84, coordinates: wgs84Points)
-        self.gcj02EncryptPoints(points, result: result)
-       
-       JZLocationConverter.default.gcj02ToWgs84Points(wgs84Points, convertMode: .GCJ02) { result in
-          // result.type = GCJ02
-       }
+        self.gcj02EncryptPointsAsync(points, conversionType: conversionType, result: result)
+    }
+    
+    public func wgs84ToGcj02Points(_ wgs84Points:[CLLocationCoordinate2D], conversionType: JZConversionType) -> [JZLocationResult] {
+        let points = convertCoordinateToResult(type: .WGS84, coordinates: wgs84Points)
+        return self.gcj02EncryptPoints(points, conversionType: conversionType)
     }
     
 //    public func wgs84ToBd09Points(_ wgs84Points:[CLLocationCoordinate2D],result:@escaping ([JZLocationResult]) -> Void) {
@@ -289,11 +365,16 @@ extension JZLocationConverter {
      If coordinate out of area, will return GCJ-02.
      We should not obtain coordinate in GCJ-02 format if the coordinate is out of area.
     */
-   public func gcj02ToWgs84Points(_ gcj02Points:[CLLocationCoordinate2D], convertMode: JZLocationType,result:@escaping ([JZLocationResult]) -> Void) {
+    public func gcj02ToWgs84PointsAsync(_ gcj02Points:[CLLocationCoordinate2D], conversionType: JZConversionType, result:@escaping ([JZLocationResult]) -> Void) {
         let points = convertCoordinateToResult(type: .GCJ02, coordinates: gcj02Points)
-        self.gcj02DecryptPoints(points, result: result)
+        self.gcj02DecryptPointsAsync(points, conversionType: conversionType, result: result)
     }
-   
+    
+    public func gcj02ToWgs84Points(_ gcj02Points:[CLLocationCoordinate2D], conversionType: JZConversionType) -> [JZLocationResult] {
+        let points = convertCoordinateToResult(type: .GCJ02, coordinates: gcj02Points)
+        return self.gcj02DecryptPoints(points, conversionType: conversionType)
+    }
+    
 //   public func gcj02ToBd09Points(_ gcj02Points:[CLLocationCoordinate2D],result:@escaping ([JZLocationResult]) -> Void) {
 //      let points = convertCoordinateToResult(type: .GCJ02, coordinates: gcj02Points)
 //      self.bd09EncryptPoints(points, result: result);
@@ -314,33 +395,103 @@ extension JZLocationConverter {
 //            self.gcj02DecryptPoints(bd09ResultPoints, result: result)
 //        }
 //    }
+   
+   // MARK: Uncomment below entry if BD09 conversion completed, the above entry should marked as private
+//   public func convertPoints(_ points: [CLLocationCoordinate2D], from: JZLocationType, to: JZLocationType, convertMode: JZConversionType) -> [JZLocationResult] {
+//      guard from != to else { return convertCoordinateToResult(type: from, coordinates: points) }
+//      
+//      switch from {
+//      case .WGS84:
+//         switch to {
+//         case .WGS84:
+//            print("") // Not expected
+//         case .GCJ02:
+//            return wgs84ToGcj02Points(points, conversionType: convertMode)
+//         case .BD09:
+//            return wgs84ToBd09Points(points, conversionType: convertMode)
+//         }
+//      case .GCJ02:
+//         switch to {
+//         case .WGS84:
+//            return gcj02ToWgs84Points(points, conversionType: convertMode)
+//         case .GCJ02:
+//            print("") // Not expected
+//         case .BD09:
+//            return gcj02ToBd09Points(points, conversionType: convertMode)
+//         }
+//      case .BD09:
+//         switch to {
+//         case .WGS84:
+//            return bd09ToWgs84Points(points, conversionType: convertMode)
+//         case .GCJ02:
+//            return bd09ToGcj02Points(points, conversionType: convertMode)
+//         case .BD09:
+//            print("") // Not expected
+//         }
+//      }
+//   }
+   
+//   public func convertPointsAsync(_ points: [CLLocationCoordinate2D], from: JZLocationType, to: JZLocationType, convertMode: JZConversionType, completion: @escaping ([JZLocationResult]) -> ()) {
+//      guard from != to else { completion(convertCoordinateToResult(type: from, coordinates: points)) }
+//      
+//      switch from {
+//      case .WGS84:
+//         switch to {
+//         case .WGS84:
+//            print("") // Not expected
+//         case .GCJ02:
+//            return wgs84ToGcj02PointsAsync(points, conversionType: convertMode, result: completion)
+//         case .BD09:
+//            return wgs84ToBd09PointsAsync(points, conversionType: convertMode, result: completion)
+//         }
+//      case .GCJ02:
+//         switch to {
+//         case .WGS84:
+//            return gcj02ToWgs84PointsAsync(points, conversionType: convertMode, result: completion)
+//         case .GCJ02:
+//            print("") // Not expected
+//         case .BD09:
+//            return gcj02ToBd09PointsAsync(points, conversionType: convertMode, result: completion)
+//         }
+//      case .BD09:
+//         switch to {
+//         case .WGS84:
+//            return bd09ToWgs84PointsAsync(points, conversionType: convertMode, result: completion)
+//         case .GCJ02:
+//            return bd09ToGcj02PointsAsync(points, conversionType: convertMode, result: completion)
+//         case .BD09:
+//            print("") // Not expected
+//         }
+//      }
+//   }
 }
 
 public struct JZLocationResult {
     public var type: JZLocationType
     public var coordinate: CLLocationCoordinate2D
-   
-    // On thought is to set isOutOfArea to be optional and nil as default.
-    // For BD-09 conversion,
-    // As we only have checking of isOutOfArea in GCJ-02, we may need double conversion in BD-09 conversion.
-    // Eg. BD-09 -> GCJ-02 -> WGS-84
-    // We can skip the checking of isOutOfArea when it is not nil
-   
-    // Should be udpated after conversion.
-    public var isOutOfArea: Bool = false
+    
+    /// Optional, will be updated after conversion
+    public var isOutOfArea: Bool? = nil
     public var latitude: Double { coordinate.latitude }
     public var longitude: Double { coordinate.longitude }
-   
+    
     mutating func setCoordinate(latitude: Double, longitude: Double) {
         coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 }
 
-/// If input "AUTO" in conversion, the result will automatically determine whether the coordinate need to be converted. Otherwise, force conversion.
 public enum JZLocationType {
     case WGS84
     case GCJ02
     case BD09
+}
+
+public enum JZConversionType {
+    case FORCE
     case AUTO
+    
+    var isForceConversion: Bool {
+        self == .FORCE
+    }
 }
 

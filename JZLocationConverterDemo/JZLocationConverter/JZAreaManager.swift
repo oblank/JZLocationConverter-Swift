@@ -111,62 +111,6 @@ open class JZAreaManager {
       }
    }
    
-   // TODO: add bypass?, if bypass, directly return true/false
-   // This function use "Ray casting algorithm" to check whether the point lie inside or outside the area
-   public func isPointsOutOfArea(gcj02Locations:[JZLocationResult], shouldBypass: Bool = false, result:@escaping ([JZLocationResult])->Void) {
-      self.queue.async {
-         var resultArray: [JZLocationResult] = []
-         if JZAreaManager.default.points != nil {
-            let length = (JZAreaManager.default.points?.count)!
-            var flag = false
-            for (index, _gcj02Location) in gcj02Locations.enumerated() {
-               var gcj02Location = _gcj02Location
-               
-               // Skip the checking to reduce checking time
-               if JZAreaManager.CheckingFrequencyOfBoundary > 0, index % JZAreaManager.CheckingFrequencyOfBoundary > 0 {
-                  gcj02Location.isOutOfArea = !flag
-                  resultArray.append(gcj02Location)
-                  continue
-               }
-               
-               flag = false
-               for idx in 0 ..< length {
-                  let nextIdx = (idx + 1) == length ? 0 : idx + 1
-                  let edgePoint = JZAreaManager.default.points![idx]
-                  let nextPoint = JZAreaManager.default.points![nextIdx]
-                  
-                  let pointX = edgePoint[1]
-                  let pointY = edgePoint[0]
-                  
-                  let nextPointX = nextPoint[1]
-                  let nextPointY = nextPoint[0]
-                  
-                  if (gcj02Location.longitude == pointX && gcj02Location.latitude == pointY) || (gcj02Location.longitude == nextPointX && gcj02Location.latitude == nextPointY) {
-                     flag = true
-                  }
-                  
-                  if((nextPointY < gcj02Location.latitude && pointY >= gcj02Location.latitude) || (nextPointY >= gcj02Location.latitude && pointY < gcj02Location.latitude)) {
-                     let thX = nextPointX + (gcj02Location.latitude - nextPointY) * (pointX - nextPointX) / (pointY - nextPointY)
-                     if(thX == gcj02Location.longitude) {
-                        flag = true
-                        break
-                     }
-                     
-                     if(thX > gcj02Location.longitude) {
-                        flag = !flag
-                     }
-                  }
-               }
-               gcj02Location.isOutOfArea = !flag
-               resultArray.append(gcj02Location)
-            }
-         }
-         DispatchQueue.main.async {
-            result(resultArray)
-         }
-      }
-   }
-   
    public func isPointsOutOfArea(gcj02Locations:[JZLocationResult]) -> [JZLocationResult] {
       return convert(gcj02Locations: gcj02Locations)
    }
@@ -185,12 +129,20 @@ open class JZAreaManager {
       }
    }
    
+   // This function use "Ray casting algorithm" to check whether the point lie inside or outside the area
    private func convert(gcj02Locations: [JZLocationResult]) -> [JZLocationResult] {
       guard let points = JZAreaManager.default.points else { return gcj02Locations }
       
       var resultArray: [JZLocationResult] = []
       var flag = false
       for (index, _gcj02Location) in gcj02Locations.enumerated() {
+         
+         // YY: Already check isInsideArea if not nil
+         if _gcj02Location.isOutOfArea != nil {
+            resultArray.append(_gcj02Location)
+            continue
+         }
+         
          var gcj02Location = _gcj02Location
          
          // YY: Skip the checking to reduce checking time
